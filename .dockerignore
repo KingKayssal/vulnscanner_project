@@ -1,0 +1,9 @@
+venv/
+scanner.db
+evidence_output/
+reports/output/
+__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+*.log

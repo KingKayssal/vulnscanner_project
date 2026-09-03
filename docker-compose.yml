@@ -1,0 +1,65 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      SCANNER_DB_URL: postgresql+psycopg://scanner:scanner@db:5432/scanner
+      SCANNER_EVIDENCE_DIR: /app/evidence_output
+      SCANNER_REPORT_DIR: /app/reports/output
+      CELERY_BROKER_URL: redis://redis:6379/0
+    volumes:
+      - evidence:/app/evidence_output
+      - reports:/app/reports/output
+    depends_on:
+      - db
+      - redis
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+  worker:
+    build: .
+    environment:
+      SCANNER_DB_URL: postgresql+psycopg://scanner:scanner@db:5432/scanner
+      SCANNER_EVIDENCE_DIR: /app/evidence_output
+      SCANNER_REPORT_DIR: /app/reports/output
+      CELERY_BROKER_URL: redis://redis:6379/0
+    volumes:
+      - evidence:/app/evidence_output
+      - reports:/app/reports/output
+    depends_on:
+      - db
+      - redis
+    command: celery -A workers.celery_app worker --loglevel=info
+
+  beat:
+    build: .
+    environment:
+      SCANNER_DB_URL: postgresql+psycopg://scanner:scanner@db:5432/scanner
+      CELERY_BROKER_URL: redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    command: celery -A workers.celery_app beat --loglevel=info
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: scanner
+      POSTGRES_PASSWORD: scanner
+      POSTGRES_DB: scanner
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
+  evidence:
+  reports:

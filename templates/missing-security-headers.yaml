@@ -1,0 +1,23 @@
+id: missing-security-headers
+info:
+  name: Missing Security Headers
+  severity: low
+  category: misconfiguration
+  cwe: CWE-693
+  cvss_base_vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N"
+  description: >
+    The response does not set recommended security headers, which can
+    increase exposure to clickjacking, MIME-sniffing, and downgrade attacks.
+  remediation: >
+    Configure the web server or application framework to send
+    Content-Security-Policy, X-Content-Type-Options, X-Frame-Options,
+    and Strict-Transport-Security headers on all responses.
+
+matcher:
+  type: header-absence
+  headers:
+    - Content-Security-Policy
+    - X-Frame-Options
+    - X-Content-Type-Options
+    - Strict-Transport-Security
+  condition: any-missing

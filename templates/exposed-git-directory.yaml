@@ -1,0 +1,21 @@
+id: exposed-git-directory
+info:
+  name: Exposed .git Directory
+  severity: high
+  category: disclosure
+  cwe: CWE-538
+  cvss_base_vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+  description: >
+    The application exposes its .git directory, potentially allowing an
+    attacker to reconstruct source code, commit history, and secrets
+    accidentally committed to the repository.
+  remediation: >
+    Block access to .git and other VCS metadata directories at the web
+    server level, and ensure they are never deployed to production webroots.
+
+matcher:
+  type: path-probe
+  path: "/.git/HEAD"
+  method: GET
+  condition: status-200-and-body-contains
+  body_contains: "ref:"

@@ -1,0 +1,25 @@
+id: reflected-xss-marker
+info:
+  name: Reflected Cross-Site Scripting (candidate)
+  severity: high
+  category: xss
+  cwe: CWE-79
+  cvss_base_vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"
+  description: >
+    A unique marker injected into a query parameter was reflected back
+    in the HTTP response without HTML-encoding, indicating the parameter
+    may be vulnerable to reflected XSS.
+  remediation: >
+    Context-appropriately encode/escape all user-supplied input before
+    reflecting it into HTML, JS, or attribute contexts. Prefer a templating
+    engine with auto-escaping enabled, and deploy a Content-Security-Policy
+    as defense in depth.
+
+# Non-destructive: injects a harmless unique string and checks whether
+# it comes back unescaped. Does not execute JS or attempt real exploitation.
+matcher:
+  type: reflected-marker
+  param_injection: query
+  marker_prefix: "sc4n_"
+  condition: marker-reflected-unescaped
+  requires_confirmation: true

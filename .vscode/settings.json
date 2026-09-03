@@ -1,0 +1,12 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^Get-ChildItem -Force; git status --short; pytest -q$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^python -m compileall -q api cli core db reports workers tests; python -c \"from core\\.template_engine import load_templates; t=load_templates\\('templates'\\); print\\(len\\(t\\), \\[x\\.id for x in t\\]\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

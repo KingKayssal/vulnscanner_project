@@ -1,0 +1,21 @@
+id: server-version-disclosure
+info:
+  name: Server Version/Technology Disclosure
+  severity: info
+  category: disclosure
+  cwe: CWE-200
+  cvss_base_vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"
+  description: >
+    The Server or X-Powered-By response header discloses specific software
+    and version information, which can help an attacker fingerprint the
+    stack and target known CVEs.
+  remediation: >
+    Suppress or genericize the Server/X-Powered-By headers at the
+    web server / reverse proxy layer.
+
+matcher:
+  type: header-value-present
+  headers:
+    - Server
+    - X-Powered-By
+  condition: any-present-with-value

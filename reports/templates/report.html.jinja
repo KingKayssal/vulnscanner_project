@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    @page {
+        size: A4;
+        margin: 2.2cm 1.8cm;
+        @bottom-center {
+            content: "Confidential — Authorized Security Assessment — Page " counter(page) " of " counter(pages);
+            font-size: 8px;
+            color: #888;
+        }
+    }
+    body { font-family: 'Helvetica', 'Arial', sans-serif; color: #1a1a1a; font-size: 10.5px; line-height: 1.5; }
+    h1 { font-size: 26px; margin-bottom: 4px; }
+    h2 { font-size: 16px; border-bottom: 2px solid #1a1a1a; padding-bottom: 4px; margin-top: 28px; }
+    h3 { font-size: 12.5px; margin-bottom: 2px; }
+    .cover { text-align: center; margin-top: 8cm; page-break-after: always; }
+    .cover .subtitle { color: #555; font-size: 13px; margin-top: 8px; }
+    .cover .meta { margin-top: 3cm; font-size: 10px; color: #444; text-align: left; display: inline-block; }
+    .cover .meta div { margin-bottom: 4px; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 9px; font-weight: bold; color: white; }
+    .critical { background: #7a1010; }
+    .high { background: #c0392b; }
+    .medium { background: #d68910; }
+    .low { background: #2980b9; }
+    .info { background: #7f8c8d; }
+    table.summary { width: 100%; border-collapse: collapse; margin: 14px 0; }
+    table.summary th, table.summary td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; font-size: 10px; }
+    table.summary th { background: #f4f4f4; }
+    .sev-bar-row { display: flex; align-items: center; margin: 4px 0; }
+    .sev-bar-label { width: 70px; font-size: 9.5px; }
+    .sev-bar-track { flex: 1; background: #eee; height: 14px; border-radius: 3px; overflow: hidden; margin: 0 8px; }
+    .sev-bar-fill { height: 100%; }
+    .sev-bar-count { width: 24px; font-size: 9.5px; text-align: right; }
+    .finding { border: 1px solid #ddd; border-radius: 4px; padding: 12px 14px; margin-bottom: 14px; page-break-inside: avoid; }
+    .finding-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .finding-title { font-weight: bold; font-size: 12.5px; }
+    .cvss-line { color: #555; font-size: 9.5px; margin-bottom: 8px; }
+    .section-label { font-weight: bold; font-size: 9.5px; text-transform: uppercase; color: #555; margin-top: 8px; }
+    .evidence-box { background: #f7f7f7; border-left: 3px solid #999; padding: 6px 10px; font-family: monospace; font-size: 9px; white-space: pre-wrap; word-break: break-all; margin-top: 4px; }
+    .evidence-img { max-width: 100%; border: 1px solid #ccc; margin-top: 6px; }
+    .muted { color: #777; font-size: 9.5px; }
+    .appendix-table { width: 100%; border-collapse: collapse; font-size: 9px; }
+    .appendix-table th, .appendix-table td { border: 1px solid #ddd; padding: 4px 6px; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+    <h1>Web Application Security Assessment</h1>
+    <div class="subtitle">{{ scan.target_domain }}</div>
+    <div class="meta">
+        <div><strong>Scan ID:</strong> {{ scan.id }}</div>
+        <div><strong>Assessment date:</strong> {{ scan.started_at }} &ndash; {{ scan.completed_at }}</div>
+        <div><strong>Initiated by:</strong> {{ scan.initiated_by }}</div>
+        <div><strong>Authorization reference:</strong> {{ scan.authorization_doc_url or "N/A" }}</div>
+        <div><strong>Pages crawled:</strong> {{ scan.pages_crawled }}</div>
+        <div><strong>Report generated:</strong> {{ generated_at }}</div>
+    </div>
+</div>
+
+<h2>Executive Summary</h2>
+<p>
+    This report summarizes the results of an authorized automated security assessment of
+    <strong>{{ scan.target_domain }}</strong>, conducted between {{ scan.started_at }} and {{ scan.completed_at }}.
+    The assessment identified <strong>{{ findings|length }}</strong> finding(s) across
+    {{ scan.pages_crawled }} crawled page(s), summarized by severity below.
+</p>
+
+<div>
+{% for sev, color in [("critical","critical"),("high","high"),("medium","medium"),("low","low"),("info","info")] %}
+<div class="sev-bar-row">
+    <div class="sev-bar-label">{{ sev|capitalize }}</div>
+    <div class="sev-bar-track">
+        <div class="sev-bar-fill {{ color }}" style="width: {{ severity_pct[sev] }}%;"></div>
+    </div>
+    <div class="sev-bar-count">{{ severity_counts[sev] }}</div>
+</div>
+{% endfor %}
+</div>
+
+<h2>Scope &amp; Methodology</h2>
+<p>
+    Testing was performed using an automated, template-driven scanner covering common misconfiguration,
+    information disclosure, and injection classes (OWASP Top 10-aligned). Both passive checks
+    (response header analysis) and active, non-destructive checks (path probing, marker-based reflection
+    testing) were used. All active checks avoid real exploitation payloads; findings marked as
+    "candidate" required a confirmation pass before being included in this report.
+</p>
+<p class="muted">
+    Limitations: automated scanning does not replace manual penetration testing for business-logic flaws,
+    complex authentication/authorization issues, or multi-step attack chains.
+</p>
+
+<h2>Findings Summary</h2>
+<table class="summary">
+    <tr><th>Severity</th><th>Title</th><th>CVSS</th><th>Affected URL</th></tr>
+    {% for f in findings|sort(attribute='cvss_score', reverse=True) %}
+    <tr>
+        <td><span class="badge {{ f.severity }}">{{ f.severity|upper }}</span></td>
+        <td>{{ f.title }}</td>
+        <td>{{ f.cvss_score }}</td>
+        <td style="word-break: break-all;">{{ f.url }}</td>
+    </tr>
+    {% endfor %}
+</table>
+
+<h2>Detailed Findings</h2>
+{% for f in findings|sort(attribute='cvss_score', reverse=True) %}
+<div class="finding">
+    <div class="finding-header">
+        <div class="finding-title">{{ loop.index }}. {{ f.title }}</div>
+        <span class="badge {{ f.severity }}">{{ f.severity|upper }}</span>
+    </div>
+    <div class="cvss-line">CVSS 3.1: {{ f.cvss_score }} &nbsp;|&nbsp; Vector: {{ f.cvss_vector }} &nbsp;|&nbsp; {{ f.cwe or "" }}</div>
+
+    <div class="section-label">Affected Asset</div>
+    <div>{{ f.url }}</div>
+
+    <div class="section-label">Description</div>
+    <div>{{ f.description }}</div>
+
+    <div class="section-label">Evidence</div>
+    <div class="evidence-box">{{ f.evidence_request }}
+{{ f.evidence_response }}</div>
+    {% if f.screenshot_path %}
+    <img class="evidence-img" src="{{ f.screenshot_path }}">
+    {% endif %}
+
+    <div class="section-label">Remediation</div>
+    <div>{{ f.remediation }}</div>
+</div>
+{% endfor %}
+
+<h2>Appendix: Crawled Assets</h2>
+<table class="appendix-table">
+    <tr><th>URL</th><th>Status</th><th>Discovered Via</th></tr>
+    {% for a in assets %}
+    <tr><td style="word-break: break-all;">{{ a.url }}</td><td>{{ a.status }}</td><td>{{ a.discovered_via }}</td></tr>
+    {% endfor %}
+</table>
+
+</body>
+</html>

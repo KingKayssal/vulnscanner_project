@@ -1,0 +1,55 @@
+name: Security Scan (staging)
+
+# Runs the scanner against the staging environment after each deploy and
+# fails the build if any new High/Critical findings are detected.
+# Requires the target's authorization window to already cover the CI run
+# (renew via `cli/scan.py authorize` or the /targets/authorize endpoint --
+# do this out-of-band, not inside the workflow, so it's a deliberate,
+# reviewed action rather than something a PR can silently extend).
+
+on:
+  workflow_run:
+    workflows: ["Deploy to Staging"]
+    types: [completed]
+
+jobs:
+  security-scan:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run vulnerability scan
+        env:
+          SCANNER_DB_URL: ${{ secrets.SCANNER_DB_URL }}
+        run: |
+          curl -s -X POST "$SCANNER_API_URL/scans" \
+            -H "Content-Type: application/json" \
+            -d '{"url": "https://staging.example.com/", "depth": 3, "initiated_by": "github-actions"}' \
+            -o scan_result.json
+          cat scan_result.json
+        env:
+          SCANNER_API_URL: ${{ secrets.SCANNER_API_URL }}
+
+      - name: Check for High/Critical findings
+        run: |
+          SCAN_ID=$(jq -r '.scan_id' scan_result.json)
+          curl -s "$SCANNER_API_URL/scans/$SCAN_ID" -o status.json
+          CRITICAL=$(jq '.severity_counts.critical // 0' status.json)
+          HIGH=$(jq '.severity_counts.high // 0' status.json)
+          echo "Critical: $CRITICAL, High: $HIGH"
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo "::error::Scan found $CRITICAL critical and $HIGH high severity issues."
+            curl -s "$SCANNER_API_URL/scans/$SCAN_ID/report" -o security-report.pdf
+            exit 1
+          fi
+        env:
+          SCANNER_API_URL: ${{ secrets.SCANNER_API_URL }}
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: security-report.pdf
+          if-no-files-found: ignore
