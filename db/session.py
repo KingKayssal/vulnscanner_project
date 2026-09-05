@@ -4,6 +4,7 @@ Local demo: SQLite file. Production: swap DATABASE_URL to Postgres, e.g.
     postgresql+psycopg://user:pass@host:5432/scanner
 """
 import os
+from contextlib import contextmanager
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from .models import Base
@@ -21,3 +22,16 @@ def init_db():
 
 def get_session():
     return SessionLocal()
+
+
+@contextmanager
+def session_scope():
+    session = get_session()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

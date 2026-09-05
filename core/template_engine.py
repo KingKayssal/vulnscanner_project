@@ -17,6 +17,8 @@ import glob
 import random
 import string
 import dataclasses
+import html
+import re
 from typing import Optional, Any
 import yaml
 
@@ -103,13 +105,31 @@ def match_path_probe(resp: HTTPResponseLike, matcher: dict) -> Optional[str]:
 
 
 def match_reflected_marker(resp: HTTPResponseLike, matcher: dict, marker: str) -> Optional[str]:
-    # crude but effective for a candidate finding: marker present, unescaped
-    # (i.e. not HTML-entity-encoded)
-    if marker in resp.text:
-        escaped_variant = marker.replace("<", "&lt;").replace(">", "&gt;")
-        if escaped_variant not in resp.text or marker in resp.text:
-            return f"Marker '{marker}' reflected unescaped in response body at {resp.url}"
+    if marker and marker in resp.text:
+        return f"Marker '{marker}' reflected in response body at {resp.url}"
     return None
+
+
+def _is_executable_html_reflection(resp: HTTPResponseLike, marker: str) -> bool:
+    """Require a raw marker in an HTML text context, outside inert blocks."""
+    content_type = _headers_ci(resp.headers).get("content-type", "").lower()
+    if "text/html" not in content_type or not marker or marker not in resp.text:
+        return False
+
+    body = re.sub(
+        r"<!--.*?-->|<script\b.*?</script\s*>|<style\b.*?</style\s*>",
+        "",
+        resp.text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    marker_start = body.find(marker)
+    if marker_start < 0:
+        return False
+
+    before_marker = body[:marker_start]
+    if before_marker.rfind("<") > before_marker.rfind(">"):
+        return False
+    return html.escape(marker) not in body or marker in body
 
 
 def generate_marker(prefix: str = "sc4n_") -> str:
@@ -142,6 +162,8 @@ def evaluate_template(
     # passive checks are self-confirming; active checks marked
     # requires_confirmation get a second pass in the orchestrator
     confirmed = matched and not requires_confirmation
+    if matched and mtype == "reflected-marker":
+        confirmed = _is_executable_html_reflection(resp, marker or "")
 
     return MatchResult(
         template=template,

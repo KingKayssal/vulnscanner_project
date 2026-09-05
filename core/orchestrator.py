@@ -11,7 +11,7 @@ end to end.
 """
 import asyncio
 import datetime as dt
-from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
+from urllib.parse import urlparse, urlencode, parse_qs, urlunparse, urljoin
 
 import httpx
 
@@ -21,6 +21,7 @@ from core.template_engine import (
 )
 from core.cvss_calculator import score_vector
 from core.screenshot import capture_evidence
+from core.target_security import TargetBoundaryError, same_origin, validate_target_url, normalize_domain
 from db.session import get_session
 from db.models import Scan, Asset, Finding, AuthorizedTarget
 
@@ -32,6 +33,7 @@ class AuthorizationError(Exception):
 
 
 def check_authorization(session, target_domain: str) -> AuthorizedTarget:
+    target_domain = normalize_domain(target_domain)
     row = (
         session.query(AuthorizedTarget)
         .filter(AuthorizedTarget.domain == target_domain)
@@ -59,15 +61,23 @@ async def _probe_active_templates(
     Returns list of (template, response, marker_used).
     """
     results = []
-    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+    expected_domain = validate_target_url(base_url)
+    seed = urlparse(base_url)
+    async with httpx.AsyncClient(follow_redirects=False, timeout=10.0) as client:
         for tpl in active_templates:
             mtype = tpl.matcher["type"]
 
             if mtype == "path-probe":
-                parsed = urlparse(base_url)
-                probe_url = f"{parsed.scheme}://{parsed.netloc}{tpl.matcher['path']}"
+                probe_url = f"{seed.scheme}://{seed.netloc}{tpl.matcher['path']}"
                 try:
                     r = await client.get(probe_url)
+                    if 300 <= r.status_code < 400 and r.headers.get("location"):
+                        redirect_url = urljoin(probe_url, r.headers["location"])
+                        if not same_origin(redirect_url, expected_domain, seed.scheme):
+                            continue
+                        validate_target_url(redirect_url, expected_domain)
+                        r = await client.get(redirect_url)
+                    validate_target_url(str(r.url), expected_domain)
                     resp = HTTPResponseLike(
                         url=probe_url, status_code=r.status_code,
                         headers=dict(r.headers), text=r.text,
@@ -89,6 +99,13 @@ async def _probe_active_templates(
                 probe_url = urlunparse(parsed._replace(query=urlencode(injected)))
                 try:
                     r = await client.get(probe_url)
+                    if 300 <= r.status_code < 400 and r.headers.get("location"):
+                        redirect_url = urljoin(probe_url, r.headers["location"])
+                        if not same_origin(redirect_url, expected_domain, seed.scheme):
+                            continue
+                        validate_target_url(redirect_url, expected_domain)
+                        r = await client.get(redirect_url)
+                    validate_target_url(str(r.url), expected_domain)
                     resp = HTTPResponseLike(
                         url=probe_url, status_code=r.status_code,
                         headers=dict(r.headers), text=r.text,
@@ -108,11 +125,16 @@ def run_scan(
     """Synchronous entry point (wraps the async crawl/probe internally).
     Returns the scan_id."""
     session = get_session()
-    domain = urlparse(seed_url).hostname
+    scan = None
+    try:
+        try:
+            domain = validate_target_url(seed_url)
+        except TargetBoundaryError as exc:
+            raise AuthorizationError(str(exc)) from exc
 
-    target = check_authorization(session, domain)
+        target = check_authorization(session, domain)
 
-    scan = Scan(
+        scan = Scan(
         organization_id=target.organization_id,
         target_id=target.id,
         status="crawling",
@@ -121,24 +143,24 @@ def run_scan(
         initiated_by=initiated_by,
         config={"seed_url": seed_url},
     )
-    session.add(scan)
-    session.commit()
+        session.add(scan)
+        session.commit()
 
-    templates = load_templates(templates_dir)
-    passive_templates = [t for t in templates if t.matcher["type"] in ("header-absence", "header-value-present")]
-    active_templates = [t for t in templates if t.matcher["type"] in ("path-probe", "reflected-marker")]
+        templates = load_templates(templates_dir)
+        passive_templates = [t for t in templates if t.matcher["type"] in ("header-absence", "header-value-present")]
+        active_templates = [t for t in templates if t.matcher["type"] in ("path-probe", "reflected-marker")]
 
-    crawl_result = asyncio.run(
-        crawl(seed_url, max_depth=crawl_depth, excluded_paths=target.excluded_paths or [])
-    )
+        crawl_result = asyncio.run(
+            crawl(seed_url, max_depth=crawl_depth, excluded_paths=target.excluded_paths or [])
+        )
 
-    scan.status = "scanning"
-    session.commit()
+        scan.status = "scanning"
+        session.commit()
 
-    finding_count = 0
-    host_level_probed: set[str] = set()  # dedupe once-per-host checks like path-probe
-    for page in crawl_result.pages:
-        asset = Asset(
+        finding_count = 0
+        host_level_probed: set[str] = set()
+        for page in crawl_result.pages:
+            asset = Asset(
             scan_id=scan.id,
             url=page.url,
             method="GET",
@@ -146,43 +168,55 @@ def run_scan(
             response_status=page.status_code,
             response_headers=page.headers,
         )
-        session.add(asset)
-        session.flush()
+            session.add(asset)
+            session.flush()
 
-        resp_like = HTTPResponseLike(
+            resp_like = HTTPResponseLike(
             url=page.url, status_code=page.status_code,
             headers=page.headers, text=page.text,
         )
 
         # --- passive templates ---
-        for tpl in passive_templates:
-            result = evaluate_template(tpl, resp_like)
-            if result.matched:
-                finding_count += _persist_finding(session, scan.id, asset.id, tpl, result.evidence, resp_like)
+            for tpl in passive_templates:
+                result = evaluate_template(tpl, resp_like)
+                if result.matched:
+                    finding_count += _persist_finding(session, scan.id, asset.id, tpl, result.evidence, resp_like)
 
         # --- active templates (need their own probe request) ---
-        host = urlparse(page.url).netloc
-        per_page_active = list(active_templates)
-        for tpl in list(per_page_active):
-            if tpl.matcher["type"] == "path-probe":
-                key = f"{host}:{tpl.id}"
-                if key in host_level_probed:
-                    per_page_active.remove(tpl)
-                else:
-                    host_level_probed.add(key)
+            host = urlparse(page.url).netloc
+            per_page_active = list(active_templates)
+            for tpl in list(per_page_active):
+                if tpl.matcher["type"] == "path-probe":
+                    key = f"{host}:{tpl.id}"
+                    if key in host_level_probed:
+                        per_page_active.remove(tpl)
+                    else:
+                        host_level_probed.add(key)
 
-        active_results = asyncio.run(_probe_active_templates(seed_url, page, per_page_active))
-        for tpl, probe_resp, marker in active_results:
-            result = evaluate_template(tpl, probe_resp, marker=marker)
-            if result.matched:
-                finding_count += _persist_finding(session, scan.id, asset.id, tpl, result.evidence, probe_resp)
+            active_results = asyncio.run(_probe_active_templates(seed_url, page, per_page_active))
+            for tpl, probe_resp, marker in active_results:
+                result = evaluate_template(tpl, probe_resp, marker=marker)
+                if result.matched and result.confirmed:
+                    finding_count += _persist_finding(session, scan.id, asset.id, tpl, result.evidence, probe_resp)
 
-    scan.status = "completed"
-    scan.completed_at = dt.datetime.utcnow()
-    session.commit()
+        scan.status = "completed"
+        scan.completed_at = dt.datetime.utcnow()
+        session.commit()
 
-    print(f"Scan {scan.id} complete: {len(crawl_result.pages)} pages, {finding_count} findings.")
-    return scan.id
+        print(f"Scan {scan.id} complete: {len(crawl_result.pages)} pages, {finding_count} findings.")
+        return scan.id
+    except Exception as exc:
+        session.rollback()
+        if scan is not None:
+            failed_scan = session.query(Scan).filter_by(id=scan.id).first()
+            if failed_scan:
+                failed_scan.status = "failed"
+                failed_scan.completed_at = dt.datetime.utcnow()
+                failed_scan.config = {**(failed_scan.config or {}), "failure": str(exc)}
+                session.commit()
+        raise
+    finally:
+        session.close()
 
 
 def _persist_finding(session, scan_id, asset_id, tpl, evidence, resp_like) -> int:

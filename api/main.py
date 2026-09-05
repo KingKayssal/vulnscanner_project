@@ -17,7 +17,9 @@ return 202 Accepted with a scan_id the client polls -- scans against real
 targets can take minutes and shouldn't block an HTTP request/CI job.
 """
 import datetime
-from fastapi import FastAPI, HTTPException
+import os
+from urllib.parse import urlparse
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -27,6 +29,26 @@ from core.orchestrator import run_scan, AuthorizationError
 from reports.report_generator import generate_report
 
 app = FastAPI(title="Web Vulnerability Scanner API", version="0.1")
+
+
+def current_organization(
+    api_key: str | None = Header(default=None, alias="X-API-Key"),
+    organization: str | None = Header(default=None, alias="X-Organization"),
+):
+    configured_key = os.environ.get("SCANNER_API_KEY")
+    if not configured_key or api_key != configured_key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    if not organization:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="X-Organization is required")
+
+    session = get_session()
+    try:
+        org = session.query(Organization).filter_by(name=organization).first()
+        if not org:
+            raise HTTPException(status_code=404, detail="Not found")
+        return org.id
+    finally:
+        session.close()
 
 
 @app.on_event("startup")
@@ -52,18 +74,16 @@ class ScanRequest(BaseModel):
 
 
 @app.post("/targets/authorize")
-def authorize_target(req: AuthorizeRequest):
+def authorize_target(req: AuthorizeRequest, organization_id: str = Depends(current_organization)):
     session = get_session()
-    org = session.query(Organization).filter_by(name=req.org).first()
-    if not org:
-        org = Organization(name=req.org)
-        session.add(org)
-        session.flush()
+    org = session.query(Organization).filter_by(id=organization_id).first()
+    if req.org != org.name:
+        raise HTTPException(status_code=404, detail="Not found")
 
     valid_until = datetime.date.fromisoformat(req.valid_until)
     valid_from = datetime.date.fromisoformat(req.valid_from) if req.valid_from else datetime.date.today()
 
-    existing = session.query(AuthorizedTarget).filter_by(domain=req.domain).first()
+    existing = session.query(AuthorizedTarget).filter_by(domain=req.domain, organization_id=organization_id).first()
     if existing:
         existing.authorized_by = req.authorized_by
         existing.authorization_doc_url = req.doc_url
@@ -73,7 +93,7 @@ def authorize_target(req: AuthorizeRequest):
         return {"status": "updated", "target_id": existing.id}
 
     target = AuthorizedTarget(
-        organization_id=org.id, domain=req.domain, authorized_by=req.authorized_by,
+        organization_id=organization_id, domain=req.domain, authorized_by=req.authorized_by,
         authorization_doc_url=req.doc_url, valid_from=valid_from, valid_until=valid_until,
         excluded_paths=req.excluded_paths,
     )
@@ -82,23 +102,25 @@ def authorize_target(req: AuthorizeRequest):
     return {"status": "created", "target_id": target.id}
 
 
-@app.post("/scans")
-def start_scan(req: ScanRequest):
+@app.post("/scans", status_code=status.HTTP_202_ACCEPTED)
+def start_scan(req: ScanRequest, organization_id: str = Depends(current_organization)):
+    session = get_session()
     try:
-        scan_id = run_scan(req.url, initiated_by=req.initiated_by, crawl_depth=req.depth)
-    except AuthorizationError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
-    if req.generate_pdf:
-        generate_report(scan_id)
-
-    return {"scan_id": scan_id}
+        target_domain = urlparse(req.url).hostname
+        target = session.query(AuthorizedTarget).filter_by(domain=target_domain, organization_id=organization_id).first()
+        if not target:
+            raise HTTPException(status_code=404, detail="Not found")
+        from workers.celery_app import run_scan_task
+        task = run_scan_task.delay(req.url, req.initiated_by, req.depth, req.generate_pdf)
+        return {"task_id": task.id}
+    finally:
+        session.close()
 
 
 @app.get("/scans/{scan_id}")
-def get_scan(scan_id: str):
+def get_scan(scan_id: str, organization_id: str = Depends(current_organization)):
     session = get_session()
-    scan = session.query(Scan).filter_by(id=scan_id).first()
+    scan = session.query(Scan).filter_by(id=scan_id, organization_id=organization_id).first()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
     findings = session.query(Finding).filter_by(scan_id=scan_id).all()
@@ -116,8 +138,11 @@ def get_scan(scan_id: str):
 
 
 @app.get("/scans/{scan_id}/findings")
-def list_findings(scan_id: str):
+def list_findings(scan_id: str, organization_id: str = Depends(current_organization)):
     session = get_session()
+    scan = session.query(Scan).filter_by(id=scan_id, organization_id=organization_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
     findings = session.query(Finding).filter_by(scan_id=scan_id).all()
     return [
         {
@@ -130,6 +155,12 @@ def list_findings(scan_id: str):
 
 
 @app.get("/scans/{scan_id}/report")
-def download_report(scan_id: str):
-    path = generate_report(scan_id)  # idempotent-ish: regenerates latest
+def download_report(scan_id: str, organization_id: str = Depends(current_organization)):
+    session = get_session()
+    scan = session.query(Scan).filter_by(id=scan_id, organization_id=organization_id).first()
+    if not scan:
+        session.close()
+        raise HTTPException(status_code=404, detail="Scan not found")
+    session.close()
+    path = generate_report(scan_id)
     return FileResponse(path, media_type="application/pdf", filename=f"report_{scan_id}.pdf")

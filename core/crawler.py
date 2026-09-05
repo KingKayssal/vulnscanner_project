@@ -10,6 +10,8 @@ import asyncio
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlparse
 
+from core.target_security import TargetBoundaryError, same_origin, validate_target_url
+
 import httpx
 
 LINK_RE = re.compile(r'href=["\'](.*?)["\']', re.IGNORECASE)
@@ -26,11 +28,6 @@ class CrawledPage:
 @dataclass
 class CrawlResult:
     pages: list[CrawledPage] = field(default_factory=list)
-
-
-def _same_origin(base: str, candidate: str) -> bool:
-    b, c = urlparse(base), urlparse(candidate)
-    return (b.scheme, b.netloc) == (c.scheme, c.netloc)
 
 
 async def crawl(
@@ -50,12 +47,14 @@ async def crawl(
     (see core/auth_login.py for the stub).
     """
     excluded_paths = excluded_paths or []
+    seed_domain = validate_target_url(seed_url)
+    seed_scheme = urlparse(seed_url).scheme
     seen: set[str] = set()
     queue: list[tuple[str, int]] = [(seed_url, 0)]
     result = CrawlResult()
 
     async with httpx.AsyncClient(
-        follow_redirects=True, timeout=10.0,
+        follow_redirects=False, timeout=10.0,
         cookies=auth_cookies or {}, headers=auth_headers or {},
     ) as client:
         while queue and len(result.pages) < max_pages:
@@ -68,7 +67,18 @@ async def crawl(
 
             try:
                 resp = await client.get(url)
-            except httpx.HTTPError:
+            except (httpx.HTTPError, TargetBoundaryError):
+                continue
+
+            if 300 <= resp.status_code < 400 and resp.headers.get("location"):
+                redirected = urljoin(url, resp.headers["location"])
+                if not same_origin(redirected, seed_domain, seed_scheme):
+                    continue
+                try:
+                    validate_target_url(redirected, seed_domain)
+                except TargetBoundaryError:
+                    continue
+                queue.insert(0, (redirected, depth))
                 continue
 
             page = CrawledPage(
@@ -81,7 +91,7 @@ async def crawl(
 
             for href in LINK_RE.findall(page.text):
                 absolute = urljoin(url, href)
-                if _same_origin(seed_url, absolute) and absolute not in seen:
+                if same_origin(absolute, seed_domain, seed_scheme) and absolute not in seen:
                     queue.append((absolute, depth + 1))
 
             await asyncio.sleep(delay_seconds)  # politeness delay
