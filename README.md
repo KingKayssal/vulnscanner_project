@@ -44,6 +44,18 @@ python3 cli/scan.py authorize \
 python3 cli/scan.py run --url https://example.com/ --depth 3
 ```
 
+On Windows, use the workspace environment and configure WeasyPrint's MSYS2
+runtime before running tests or generating reports:
+
+```powershell
+.venv\Scripts\Activate.ps1
+$env:WEASYPRINT_DLL_DIRECTORIES = "C:\msys64\mingw64\bin"
+python -m pytest -q
+```
+
+Install the native runtime with MSYS2's `mingw-w64-x86_64-pango` package if
+the report tests cannot load `libgobject-2.0-0`.
+
 Or via the API:
 
 ```bash

@@ -13,7 +13,7 @@ import datetime as dt
 from pathlib import Path
 from urllib.parse import urlparse
 
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from weasyprint import HTML
 
 from db.session import get_session
@@ -36,9 +36,7 @@ def _severity_pct(counts: dict) -> dict:
     return {k: round((v / total) * 100, 1) for k, v in counts.items()}
 
 
-def generate_report(scan_id: str) -> str:
-    session = get_session()
-
+def _generate_report(scan_id: str, session) -> str:
     scan = session.query(Scan).filter_by(id=scan_id).first()
     if not scan:
         raise ValueError(f"Scan {scan_id} not found")
@@ -47,9 +45,10 @@ def generate_report(scan_id: str) -> str:
     findings = session.query(Finding).filter_by(scan_id=scan_id).all()
     assets = session.query(Asset).filter_by(scan_id=scan_id).all()
 
+    assets_by_id = {asset.id: asset for asset in assets}
     finding_rows = []
     for f in findings:
-        asset = session.query(Asset).filter_by(id=f.asset_id).first()
+        asset = assets_by_id.get(f.asset_id)
         screenshot_path = None
         if f.screenshot_url and os.path.exists(f.screenshot_url):
             screenshot_path = Path(f.screenshot_url).resolve().as_uri()
@@ -85,7 +84,10 @@ def generate_report(scan_id: str) -> str:
         for a in assets
     ]
 
-    env = Environment(loader=FileSystemLoader(TEMPLATES_DIR))
+    env = Environment(
+        loader=FileSystemLoader(TEMPLATES_DIR),
+        autoescape=select_autoescape(["html", "xml"]),
+    )
     template = env.get_template("report.html.jinja")
     html_str = template.render(
         scan=scan_ctx,
@@ -99,16 +101,28 @@ def generate_report(scan_id: str) -> str:
     out_path = OUTPUT_DIR / f"report_{scan_id}.pdf"
     HTML(string=html_str, base_url=".").write_pdf(str(out_path))
 
-    report_row = Report(
-        scan_id=scan_id,
-        file_url=str(out_path),
-        summary={"severity_counts": counts, "total_findings": len(findings)},
-    )
-    session.add(report_row)
+    report_row = session.query(Report).filter_by(scan_id=scan_id).first()
+    if report_row:
+        report_row.file_url = str(out_path)
+        report_row.summary = {"severity_counts": counts, "total_findings": len(findings)}
+    else:
+        session.add(Report(
+            scan_id=scan_id,
+            file_url=str(out_path),
+            summary={"severity_counts": counts, "total_findings": len(findings)},
+        ))
     session.commit()
 
     print(f"Report generated: {out_path}")
     return str(out_path)
+
+
+def generate_report(scan_id: str) -> str:
+    session = get_session()
+    try:
+        return _generate_report(scan_id, session)
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":
