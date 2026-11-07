@@ -4,7 +4,7 @@ Uses SQLite for local/demo use; swap the engine URL for Postgres in production
 (see db/session.py).
 """
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 from sqlalchemy import (
     Column, String, Text, Boolean, ForeignKey, DateTime, Date,
@@ -19,11 +19,20 @@ def gen_uuid() -> str:
     return str(uuid.uuid4())
 
 
+def utc_now() -> datetime:
+    """Current UTC time as a naive datetime (replaces deprecated datetime.utcnow).
+
+    Columns are timezone-naive and store UTC, so the tzinfo is dropped to keep
+    stored values and comparisons identical to the previous behaviour.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class Organization(Base):
     __tablename__ = "organizations"
     id = Column(String, primary_key=True, default=gen_uuid)
     name = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
 
     targets = relationship("AuthorizedTarget", back_populates="organization")
 
@@ -42,7 +51,7 @@ class AuthorizedTarget(Base):
     valid_from = Column(Date, nullable=False)
     valid_until = Column(Date, nullable=False)
     excluded_paths = Column(JSON, default=list)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
 
     organization = relationship("Organization", back_populates="targets")
 
@@ -62,7 +71,7 @@ class Scan(Base):
     completed_at = Column(DateTime, nullable=True)
     initiated_by = Column(String, nullable=False)
     config = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
 
     __table_args__ = (
         CheckConstraint(
@@ -84,7 +93,7 @@ class Asset(Base):
     discovered_via = Column(String, default="crawl")
     response_status = Column(Integer, nullable=True)
     response_headers = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
 
     scan = relationship("Scan", back_populates="assets")
 
@@ -101,7 +110,7 @@ class Template(Base):
     yaml_definition = Column(JSON, nullable=False)
     is_active = Column(Boolean, default=True)
     author = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
 
 
 class Finding(Base):
@@ -122,7 +131,7 @@ class Finding(Base):
     confirmed = Column(Boolean, default=False)
     false_positive = Column(Boolean, default=False)
     status = Column(String, default="open")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
 
     __table_args__ = (
         CheckConstraint("severity in ('critical','high','medium','low','info')"),
@@ -139,5 +148,5 @@ class Report(Base):
     id = Column(String, primary_key=True, default=gen_uuid)
     scan_id = Column(String, ForeignKey("scans.id"))
     file_url = Column(String, nullable=False)
-    generated_at = Column(DateTime, default=datetime.utcnow)
+    generated_at = Column(DateTime, default=utc_now)
     summary = Column(JSON, default=dict)

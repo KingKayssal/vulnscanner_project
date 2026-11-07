@@ -10,7 +10,6 @@ end to end.
     6. Persist everything
 """
 import asyncio
-import datetime as dt
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse, urljoin
 
 import httpx
@@ -23,7 +22,7 @@ from core.cvss_calculator import score_vector
 from core.screenshot import capture_evidence
 from core.target_security import TargetBoundaryError, same_origin, validate_target_url, normalize_domain
 from db.session import get_session
-from db.models import Scan, Asset, Finding, AuthorizedTarget
+from db.models import Scan, Asset, Finding, AuthorizedTarget, utc_now
 
 TEMPLATES_DIR = "templates"
 
@@ -139,7 +138,7 @@ def run_scan(
         target_id=target.id,
         status="crawling",
         crawl_depth=crawl_depth,
-        started_at=dt.datetime.utcnow(),
+        started_at=utc_now(),
         initiated_by=initiated_by,
         config={"seed_url": seed_url},
     )
@@ -200,7 +199,7 @@ def run_scan(
                     finding_count += _persist_finding(session, scan.id, asset.id, tpl, result.evidence, probe_resp)
 
         scan.status = "completed"
-        scan.completed_at = dt.datetime.utcnow()
+        scan.completed_at = utc_now()
         session.commit()
 
         print(f"Scan {scan.id} complete: {len(crawl_result.pages)} pages, {finding_count} findings.")
@@ -211,7 +210,7 @@ def run_scan(
             failed_scan = session.query(Scan).filter_by(id=scan.id).first()
             if failed_scan:
                 failed_scan.status = "failed"
-                failed_scan.completed_at = dt.datetime.utcnow()
+                failed_scan.completed_at = utc_now()
                 failed_scan.config = {**(failed_scan.config or {}), "failure": str(exc)}
                 session.commit()
         raise

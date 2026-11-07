@@ -18,6 +18,7 @@ targets can take minutes and shouldn't block an HTTP request/CI job.
 """
 import datetime
 import os
+from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import FileResponse
@@ -28,7 +29,13 @@ from db.models import Organization, AuthorizedTarget, Scan, Finding
 from core.orchestrator import run_scan, AuthorizationError
 from core.target_security import normalize_domain
 
-app = FastAPI(title="Web Vulnerability Scanner API", version="0.1")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="Web Vulnerability Scanner API", version="0.1", lifespan=lifespan)
 
 
 def current_organization(
@@ -49,11 +56,6 @@ def current_organization(
         return org.id
     finally:
         session.close()
-
-
-@app.on_event("startup")
-def _startup():
-    init_db()
 
 
 class AuthorizeRequest(BaseModel):
